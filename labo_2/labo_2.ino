@@ -1,219 +1,210 @@
-/*
-   Advanced example of using bstracted transport for reading and writing
-   register data from a UART-based device such as a TMC2209
 
-   Written with help by Claude!
-  https://claude.ai/chat/335f50b1-3dd8-435e-9139-57ec7ca26a3c (at this time
-  chats are not shareable :(
-*/
+//numero DA: 2407822
+//NOM TEMATIO TSAKENG
 
-#include "Adafruit_BusIO_Register.h"
-#include "Adafruit_GenericDevice.h"
+#include <MeAuriga.h>
 
-// Debugging macros
-#define DEBUG_SERIAL Serial
+#define LEDNUM 12
+#define LEDPIN 44
 
-#ifdef DEBUG_SERIAL
-#define DEBUG_PRINT(x) DEBUG_SERIAL.print(x)
-#define DEBUG_PRINTLN(x) DEBUG_SERIAL.println(x)
-#define DEBUG_PRINT_HEX(x)                                                     \
-  do {                                                                         \
-    if (x < 0x10)                                                              \
-      DEBUG_SERIAL.print('0');                                                 \
-    DEBUG_SERIAL.print(x, HEX);                                                \
-    DEBUG_SERIAL.print(' ');                                                   \
-  } while (0)
-#else
-#define DEBUG_PRINT(x)
-#define DEBUG_PRINTLN(x)
-#define DEBUG_PRINT_HEX(x)
-#endif
+MeRGBLed led(PORT0, LEDNUM);
+MeUltrasonicSensor sonar(PORT_10);
 
-#define TMC2209_IOIN 0x06
+enum Etat { MARCHE, LENT, ARRET, RECULE, PIVOTE, MAX_STATE };
 
-class TMC2209_UART {
-private:
-  Stream *_uart_stream;
-  uint8_t _addr;
+Etat currentState = MARCHE;
 
-  static bool uart_read(void *thiz, uint8_t *buffer, size_t len) {
-    TMC2209_UART *dev = (TMC2209_UART *)thiz;
-    uint16_t timeout = 100;
-    while (dev->_uart_stream->available() < len && timeout--) {
-      delay(1);
-    }
-    if (timeout == 0) {
-      DEBUG_PRINTLN("Read timeout!");
-      return false;
-    }
+unsigned long currentTime = 0;
+unsigned long previousState = 0;
+const int speed = 255*0.70;
+const int halfSpeed = speed/2;
+int dist = 400;
 
-    DEBUG_PRINT("Reading: ");
-    for (size_t i = 0; i < len; i++) {
-      buffer[i] = dev->_uart_stream->read();
-      DEBUG_PRINT_HEX(buffer[i]);
-    }
-    DEBUG_PRINTLN("");
+const int m2_pwm = 10;
+const int m2_in1 = 47;
+const int m2_in2 = 46;
 
-    return true;
-  }
-
-  static bool uart_write(void *thiz, const uint8_t *buffer, size_t len) {
-    TMC2209_UART *dev = (TMC2209_UART *)thiz;
-    DEBUG_PRINT("Writing: ");
-    for (size_t i = 0; i < len; i++) {
-      DEBUG_PRINT_HEX(buffer[i]);
-    }
-    DEBUG_PRINTLN("");
-
-    dev->_uart_stream->write(buffer, len);
-    return true;
-  }
-
-  static bool uart_readreg(void *thiz, uint8_t *addr_buf, uint8_t addrsiz,
-                           uint8_t *data, uint16_t datalen) {
-    TMC2209_UART *dev = (TMC2209_UART *)thiz;
-    while (dev->_uart_stream->available())
-      dev->_uart_stream->read();
-
-    uint8_t packet[4] = {0x05, uint8_t(dev->_addr << 1), addr_buf[0], 0x00};
-
-    packet[3] = calcCRC(packet, 3);
-    if (!uart_write(thiz, packet, 4))
-      return false;
-
-    // Read back echo
-    uint8_t echo[4];
-    if (!uart_read(thiz, echo, 4))
-      return false;
-
-    // Verify echo
-    for (uint8_t i = 0; i < 4; i++) {
-      if (echo[i] != packet[i]) {
-        DEBUG_PRINTLN("Echo mismatch");
-        return false;
-      }
-    }
-
-    uint8_t response[8]; // sync + 0xFF + reg + 4 data bytes + CRC
-    if (!uart_read(thiz, response, 8))
-      return false;
-
-    // Verify response
-    if (response[0] != 0x05) {
-      DEBUG_PRINTLN("Invalid sync byte");
-      return false;
-    }
-
-    if (response[1] != 0xFF) {
-      DEBUG_PRINTLN("Invalid reply address");
-      return false;
-    }
-
-    if (response[2] != addr_buf[0]) {
-      DEBUG_PRINTLN("Register mismatch");
-      return false;
-    }
-
-    uint8_t crc = calcCRC(response, 7);
-    if (crc != response[7]) {
-      DEBUG_PRINTLN("CRC mismatch");
-      return false;
-    }
-
-    memcpy(data, &response[3], 4);
-    return true;
-  }
-
-  static bool uart_writereg(void *thiz, uint8_t *addr_buf, uint8_t addrsiz,
-                            const uint8_t *data, uint16_t datalen) {
-    TMC2209_UART *dev = (TMC2209_UART *)thiz;
-    while (dev->_uart_stream->available())
-      dev->_uart_stream->read();
-
-    uint8_t packet[8] = {0x05,
-                         uint8_t(dev->_addr << 1),
-                         uint8_t(addr_buf[0] | 0x80),
-                         data[0],
-                         data[1],
-                         data[2],
-                         data[3],
-                         0x00};
-
-    packet[7] = calcCRC(packet, 7);
-    if (!uart_write(thiz, packet, 8))
-      return false;
-
-    uint8_t echo[8];
-    if (!uart_read(thiz, echo, 8))
-      return false;
-
-    for (uint8_t i = 0; i < 8; i++) {
-      if (echo[i] != packet[i]) {
-        DEBUG_PRINTLN("Write echo mismatch");
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  static uint8_t calcCRC(uint8_t *data, uint8_t length) {
-    uint8_t crc = 0;
-    for (uint8_t i = 0; i < length; i++) {
-      uint8_t currentByte = data[i];
-      for (uint8_t j = 0; j < 8; j++) {
-        if ((crc >> 7) ^ (currentByte & 0x01)) {
-          crc = (crc << 1) ^ 0x07;
-        } else {
-          crc = crc << 1;
-        }
-        currentByte = currentByte >> 1;
-      }
-    }
-    return crc;
-  }
-
-public:
-  TMC2209_UART(Stream *serial, uint8_t addr)
-      : _uart_stream(serial), _addr(addr) {}
-
-  Adafruit_GenericDevice *createDevice() {
-    return new Adafruit_GenericDevice(this, uart_read, uart_write, uart_readreg,
-                                      uart_writereg);
-  }
-};
+const int m1_pwm = 11;
+const int m1_in1 = 48;
+const int m1_in2 = 49;
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    ;
-  delay(100);
-  Serial.println("TMC2209 Generic Device register read/write test!");
 
-  Serial1.begin(115200);
+  led.setpin(LEDPIN);
+  // led.setColor(0, 0, 0);
+  // led.show();
 
-  TMC2209_UART uart(&Serial1, 0);
-  Adafruit_GenericDevice *device = uart.createDevice();
-  device->begin();
+  pinMode(m1_pwm, OUTPUT);
+  pinMode(m1_in1, OUTPUT);
+  pinMode(m1_in2, OUTPUT);
 
-  // Create register object for IOIN
-  Adafruit_BusIO_Register ioin_reg(device,
-                                   TMC2209_IOIN, // device and register address
-                                   4,            // width = 4 bytes
-                                   MSBFIRST,     // byte order
-                                   1);           // address width = 1 byte
-  Serial.print("IOIN = 0x");
-  Serial.println(ioin_reg.read(), HEX);
+  pinMode(m2_pwm, OUTPUT);
+  pinMode(m2_in1, OUTPUT);
+  pinMode(m2_in2, OUTPUT);
 
-  // Create RegisterBits for VERSION field (bits 31:24)
-  Adafruit_BusIO_RegisterBits version_bits(
-      &ioin_reg, 8, 24); // 8 bits wide, starting at bit 24
-
-  Serial.println("Reading VERSION...");
-  uint8_t version = version_bits.read();
-
-  Serial.print("VERSION = 0x");
-  Serial.println(version, HEX);
+  Stop();
+  previousState = millis();
 }
 
-void loop() { delay(1000); }
+void loop() {
+  currentTime = millis();
+
+  dist = distanceTask(currentTime);
+  printDistanceTask(currentTime, dist);
+  etatGerer();
+  ledTask(currentState);
+}
+
+
+void printDistanceTask(unsigned long ct, int distance) {
+  static unsigned long lastTime = 0;
+
+  if (ct - lastTime < 250) {
+    return;
+  }
+
+  lastTime = ct;
+
+  Serial.print("Distance : ");
+  Serial.print(distance);
+  Serial.println(" cm");
+}
+
+int distanceTask(unsigned long ct) {
+  static unsigned long lastTime = 0;
+  static int lastResult = 400;
+
+  if (ct - lastTime < 100) {
+    return lastResult;
+  }
+
+  lastTime = ct;
+  lastResult = sonar.distanceCm();
+
+  return lastResult;
+}
+
+void etatGerer() {
+  switch (currentState) {
+    case MARCHE:
+      Forward();  
+
+      if (dist < 100) {
+        currentState = LENT;
+      }
+      break;
+
+    case LENT:
+      Forward();  
+
+      if (dist < 30) {
+        currentState = ARRET;
+        previousState = currentTime;
+      } else if (dist >= 100) {
+        currentState = MARCHE;
+      }
+      break;
+
+    case ARRET:
+      Stop();
+
+      if (currentTime - previousState >= 2000) {
+        currentState = RECULE;
+        previousState = currentTime;
+      }
+      break;
+
+    case RECULE:
+      Backward();
+
+      if (currentTime - previousState >= 1000) {
+        currentState = PIVOTE;
+        previousState = currentTime;
+      }
+      break;
+
+    case PIVOTE:
+      TurnRight();  
+
+
+      if (currentTime - previousState >= 900) {
+        currentState = MARCHE;
+        previousState = currentTime;
+      }
+      break;
+
+    default:
+      currentState = ARRET;
+      previousState = currentTime;
+  }
+}
+
+void ledTask(Etat state) {
+  static Etat previousState = MAX_STATE;
+
+  if (state == previousState) {
+    return;
+  }
+
+  previousState = state;
+ 
+  if (state == MARCHE) {
+    for (int i = 0; i <= LEDNUM/2-1; i++) {
+      led.setColorAt(i, 0, 255, 0);
+      
+    }
+    led.show();
+   led.setColor(0, 0, 0);
+    
+  } else if (state == LENT) {
+    for (int i = LEDNUM/2; i <= LEDNUM ; i++) {
+      led.setColorAt(i, 255, 255, 0);
+    }
+  led.show();
+   led.setColor(0, 0, 0);
+  } 
+  else {
+    
+     led.setColor(255, 0, 0);
+      led.show();
+   led.setColor(0, 0, 0);
+  }
+
+}
+
+void Forward() {
+  digitalWrite(m1_in2, LOW);
+  digitalWrite(m1_in1, HIGH);
+  analogWrite(m1_pwm, speed);
+
+  digitalWrite(m2_in2, LOW);
+  digitalWrite(m2_in1, HIGH);
+  analogWrite(m2_pwm, speed);
+}
+
+void Backward() {
+  digitalWrite(m1_in2, HIGH);
+  digitalWrite(m1_in1, LOW);
+  analogWrite(m1_pwm, halfSpeed);
+
+  digitalWrite(m2_in2, HIGH);
+  digitalWrite(m2_in1, LOW);
+  analogWrite(m2_pwm, halfSpeed);
+}
+
+void Stop() {
+  analogWrite(m1_pwm, 0);
+  analogWrite(m2_pwm, 0);
+}
+
+void TurnRight() {
+  digitalWrite(m1_in2, HIGH);
+  digitalWrite(m1_in1, LOW);
+  analogWrite(m1_pwm, halfSpeed);
+
+  digitalWrite(m2_in2, LOW);
+  digitalWrite(m2_in1, HIGH);
+  analogWrite(m2_pwm, halfSpeed);
+
+}
