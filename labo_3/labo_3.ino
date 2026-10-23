@@ -29,7 +29,9 @@ enum Etat {
   PIVOT_2,
   SEGMENT_C,
   PIVOT_FINAL,
-  FIN
+  FIN,
+  RETOUR,
+  FIN_B
 };
 
 
@@ -40,7 +42,7 @@ unsigned long debutEtat = 0;
 
 
 // Distance provisoire pour les segments A et C.
-const float DISTANCE_FIX = 120.0;
+const float DISTANCE_FIX = 90.0;
 
 
 // Distance d'arret devant l'obstacle.
@@ -81,6 +83,7 @@ const int VITESSE_AVANCE = 80;
 
 double angleDepart = 0;
 double erreurPrecedente = 0;
+double sommeErreurs = 0;
 
 
 unsigned long derniereCorrection = 0;
@@ -89,6 +92,18 @@ unsigned long derniereCorrection = 0;
 // Pause apres un pivot, geree avec millis().
 unsigned long pauseJusqua = 0;
 bool segmentPrepare = false;
+
+
+// Position du robot dans le parcour
+float posX = 0;
+float posY = 0;
+float derniereDistance = 0;
+
+
+// variables pour retour
+float distanceRetour = 0;
+double angleRetour = 0;
+bool retourPivotFait = false;
 
 
 void setup() {
@@ -126,6 +141,14 @@ void setup() {
 
   Encoder_1.setRatio(39.267);
   Encoder_2.setRatio(39.267);
+
+
+  Encoder_1.setPosPid(1.8, 0, 1.2);
+  Encoder_2.setPosPid(1.8, 0, 1.2);
+
+
+  Encoder_1.setSpeedPid(0.18, 0, 0);
+  Encoder_2.setSpeedPid(0.18, 0, 0);
 
 
   // Moteurs arretes
@@ -195,7 +218,7 @@ float lireDistanceAvant(unsigned long maintenant) {
 
 
 // Barre de progression sur les LED 1 a 7.
-// Barre de progression sur les LED 1 a 7.
+
 void afficherProgression(float distanceParcourueSegment, float distanceTotale) {
   int nombreLed = (distanceParcourueSegment / distanceTotale) * 7.0;
 
@@ -212,6 +235,88 @@ void afficherProgression(float distanceParcourueSegment, float distanceTotale) {
       led.setColorAt(i, 0, 0, 0);
     }
   }
+}
+
+
+// Conversion HSV vers RGB pour faire mon arc-en-ciel.
+void hsvVersRgb(float h, float s, float v, int &r, int &g, int &b) {
+  float c = v * s;
+  float x = c * (1.0 - fabs(fmod(h / 60.0, 2.0) - 1.0));
+  float m = v - c;
+
+
+  float rTemp;
+  float gTemp;
+  float bTemp;
+
+
+  if (h < 60) {
+    rTemp = c;
+    gTemp = x;
+    bTemp = 0;
+  } else if (h < 120) {
+    rTemp = x;
+    gTemp = c;
+    bTemp = 0;
+  } else if (h < 180) {
+    rTemp = 0;
+    gTemp = c;
+    bTemp = x;
+  } else if (h < 240) {
+    rTemp = 0;
+    gTemp = x;
+    bTemp = c;
+  } else if (h < 300) {
+    rTemp = x;
+    gTemp = 0;
+    bTemp = c;
+  } else {
+    rTemp = c;
+    gTemp = 0;
+    bTemp = x;
+  }
+
+
+  r = (rTemp + m) * 255.0;
+  g = (gTemp + m) * 255.0;
+  b = (bTemp + m) * 255.0;
+}
+
+
+// Arc-en-ciel anime sur les 12 LED.
+void arcEnCielTask(unsigned long maintenant) {
+  static unsigned long derniereMiseAJour = 0;
+  static float decalage = 0;
+
+
+  if (maintenant - derniereMiseAJour < 50) {
+    return;
+  }
+
+
+  derniereMiseAJour = maintenant;
+  decalage += 10.0;
+
+
+  if (decalage >= 360.0) {
+    decalage = 0.0;
+  }
+
+
+  for (int i = 0; i < 12; i++) {
+    float teinte = fmod(decalage + (i * 30.0), 360.0);
+
+
+    int r;
+    int g;
+    int b;
+
+
+    hsvVersRgb(teinte, 1.0, 1.0, r, g, b);
+
+
+    led.setColorAt(i, r, g, b);
+  }
 
 
   led.show();
@@ -219,8 +324,17 @@ void afficherProgression(float distanceParcourueSegment, float distanceTotale) {
 
 
 void ledTask(unsigned long maintenant) {
+  static unsigned long derniereMiseAJour = 0;
   static unsigned long dernierClignotement = 0;
   static bool ledAllumees = false;
+
+
+  if (maintenant - derniereMiseAJour < 100) {
+    return;
+  }
+
+
+  derniereMiseAJour = maintenant;
 
 
   switch (etatActuel) {
@@ -228,42 +342,38 @@ void ledTask(unsigned long maintenant) {
 
     case SEGMENT_A:
       led.setColorAt(11, 0, 255, 0);
-      led.show();
-
-
       afficherProgression(distanceParcourue(), DISTANCE_FIX);
+      led.show();
       break;
 
 
     case PIVOT_1:
-      // Le segment A est termine 
+      // Le segment A est termine : barre complete.
       led.setColorAt(11, 0, 255, 0);
       afficherProgression(DISTANCE_FIX, DISTANCE_FIX);
+      led.show();
       break;
 
 
     case SEGMENT_B:
       led.setColorAt(10, 0, 255, 0);
+      afficherProgression(distanceParcourue(), DISTANCE_FIX);
       led.show();
-
-
-      afficherProgression(distanceParcourue(), DISTANCE_OBSTACLE);
       break;
 
 
     case PIVOT_2:
-      // Le segment B est termine 
+      // Le segment B est termine : barre complete.
       led.setColorAt(10, 0, 255, 0);
       afficherProgression(DISTANCE_OBSTACLE, DISTANCE_OBSTACLE);
+      led.show();
       break;
 
 
     case SEGMENT_C:
       led.setColorAt(9, 0, 255, 0);
-      led.show();
-
-
       afficherProgression(distanceParcourue(), DISTANCE_FIX);
+      led.show();
       break;
 
 
@@ -271,11 +381,12 @@ void ledTask(unsigned long maintenant) {
       // Le segment C est termine 
       led.setColorAt(9, 0, 255, 0);
       afficherProgression(DISTANCE_FIX, DISTANCE_FIX);
+      led.show();
       break;
 
 
     case FIN:
-      // Eteint la barre de progression des segments.
+      // Fin de la livraison : LED 8 a 12 clignotent en vert.
       for (int i = 0; i < 7; i++) {
         led.setColorAt(i, 0, 0, 0);
       }
@@ -300,9 +411,44 @@ void ledTask(unsigned long maintenant) {
       break;
 
 
+    case RETOUR:
+      // Arc-en-ciel anime pendant le retour.
+      arcEnCielTask(maintenant);
+      break;
+
+
+    case FIN_B:
+      // Fin apres le retour : toutes les LED en vert.
+      for (int i = 0; i < 12; i++) {
+        led.setColorAt(i, 0, 255, 0);
+      }
+
+
+      led.show();
+      break;
+
+
     default:
       break;
   }
+}
+
+
+// Met a jour la position du robot pendant les segments droits.
+void mettreAJourPosition(float distanceActuelle) {
+  float delta = distanceActuelle - derniereDistance;
+
+
+  if (delta > 0) {
+    float angleRad = gyro.getAngleZ() * PI / 180.0;
+
+
+    posX += delta * sin(angleRad);
+    posY += delta * cos(angleRad);
+  }
+
+
+  derniereDistance = distanceActuelle;
 }
 
 
@@ -320,7 +466,14 @@ void parcoursTask(unsigned long maintenant) {
         // Direction a conserver pendant le segment.
         angleDepart = gyro.getAngleZ();
         erreurPrecedente = 0;
+        sommeErreurs = 0;
         derniereCorrection = maintenant;
+
+
+        // Le point de depart est (0, 0).
+        posX = 0;
+        posY = 0;
+        derniereDistance = 0;
 
 
         etatActuel = SEGMENT_A;
@@ -333,6 +486,9 @@ void parcoursTask(unsigned long maintenant) {
 
 
     case SEGMENT_A:
+      mettreAJourPosition(distanceParcourue());
+
+
       if (distanceParcourue() >= DISTANCE_FIX) {
         arreterRobot();
 
@@ -362,13 +518,17 @@ void parcoursTask(unsigned long maintenant) {
       }
 
 
-
       if (!segmentPrepare) {
         angleDepart = gyro.getAngleZ();
         erreurPrecedente = 0;
+        sommeErreurs = 0;
         derniereCorrection = maintenant;
+        derniereDistance = 0;
         segmentPrepare = true;
       }
+
+
+      mettreAJourPosition(distanceParcourue());
 
 
       if (lireDistanceAvant(maintenant) <= DISTANCE_OBSTACLE) {
@@ -393,20 +553,23 @@ void parcoursTask(unsigned long maintenant) {
 
 
     case SEGMENT_C:
-    
+   
       if (maintenant < pauseJusqua) {
         arreterRobot();
         break;
       }
 
-
-    
       if (!segmentPrepare) {
         angleDepart = gyro.getAngleZ();
         erreurPrecedente = 0;
+        sommeErreurs = 0;
         derniereCorrection = maintenant;
+        derniereDistance = 0;
         segmentPrepare = true;
       }
+
+
+      mettreAJourPosition(distanceParcourue());
 
 
       if (distanceParcourue() >= DISTANCE_FIX) {
@@ -431,6 +594,46 @@ void parcoursTask(unsigned long maintenant) {
 
 
     case FIN:
+      // La livraison est terminee : clignotement pendant 3 secondes.
+      if (maintenant - debutEtat >= 3000) {
+        arreterRobot();
+
+
+        // Preparation du retour en diagonale.
+        distanceRetour = sqrt(posX * posX + posY * posY);
+        angleRetour = atan2(-posX, -posY) * 180.0 / PI;
+
+
+        retourPivotFait = false;
+
+
+        Encoder_1.setPulsePos(0);
+        Encoder_2.setPulsePos(0);
+
+
+        etatActuel = RETOUR;
+        debutEtat = maintenant;
+
+
+        Serial.println("FIN terminee : debut du retour");
+        Serial.print("Position X : ");
+        Serial.println(posX);
+        Serial.print("Position Y : ");
+        Serial.println(posY);
+        Serial.print("Distance retour : ");
+        Serial.println(distanceRetour);
+        Serial.print("Angle retour : ");
+        Serial.println(angleRetour);
+      }
+      break;
+
+
+    case RETOUR:
+      retourTask(maintenant);
+      break;
+
+
+    case FIN_B:
       arreterRobot();
       break;
 
@@ -466,21 +669,37 @@ void avancerDroitTask(unsigned long maintenant) {
   derniereCorrection = maintenant;
 
 
-  const double kp = 3.0;
-  const double kd = 1.0;
+  const double kp = 8.5;
+  const double ki = 0.2;
+  const double kd = 5.5;
 
 
   double erreur = gyro.getAngleZ() - angleDepart;
 
 
+  sommeErreurs += erreur;
+
+
+  if (sommeErreurs > 100.0) {
+    sommeErreurs = 100.0;
+  }
+
+
+  if (sommeErreurs < -100.0) {
+    sommeErreurs = -100.0;
+  }
+
+
   double correction =
-    kp * erreur + kd * (erreur - erreurPrecedente);
+    kp * erreur +
+    ki * sommeErreurs +
+    kd * (erreur - erreurPrecedente);
 
 
   erreurPrecedente = erreur;
 
 
-  correction = -constrain(correction, -40.0, 40.0);
+  correction = -constrain(correction, -60.0, 60.0);
 
 
   int pwm1 = -VITESSE_AVANCE + correction;
@@ -527,12 +746,12 @@ void pivotGauche90Task(unsigned long maintenant) {
     pivotDemarre = false;
 
 
-
+    // Preparation du segment B.
     Encoder_1.setPulsePos(0);
     Encoder_2.setPulsePos(0);
 
 
-
+ 
     pauseJusqua = maintenant + 500;
 
 
@@ -558,7 +777,8 @@ void pivotGauche90Task(unsigned long maintenant) {
   erreurPrecedente = erreur;
 
 
-  double pwmPivot = -constrain(fabs(correction), 35.0, 70.0);
+  // Pivot gauche plus puissant.
+  double pwmPivot = -constrain(fabs(correction), 55.0, 90.0);
 
 
   Encoder_1.setMotorPwm(pwmPivot);
@@ -601,6 +821,7 @@ void pivotDroite90Task(unsigned long maintenant) {
     pivotDemarre = false;
 
 
+    // Preparation du segment C.
     Encoder_1.setPulsePos(0);
     Encoder_2.setPulsePos(0);
 
@@ -630,8 +851,8 @@ void pivotDroite90Task(unsigned long maintenant) {
   erreurPrecedente = erreur;
 
 
-  // Pivot a droite.
-  double pwmPivot = constrain(fabs(correction), 55.0, 90.0);
+  // Pivot droite plus puissant.
+  double pwmPivot = constrain(fabs(correction), 60.0, 95.0);
 
 
   Encoder_1.setMotorPwm(pwmPivot);
@@ -686,9 +907,11 @@ void pivot180Task(unsigned long maintenant) {
 
 
     etatActuel = FIN;
+    debutEtat = maintenant;
 
 
     Serial.println("PIVOT FINAL termine");
+    Serial.println("FIN : clignotement avant le retour");
     return;
   }
 
@@ -698,9 +921,9 @@ void pivot180Task(unsigned long maintenant) {
 
 
   if (fabs(erreur) < 40.0) {
-    vitessePivot = 35.0;
+    vitessePivot = 45.0;
   } else {
-    vitessePivot = 75.0;
+    vitessePivot = 85.0;
   }
 
 
@@ -708,16 +931,133 @@ void pivot180Task(unsigned long maintenant) {
 
 
   if (erreur < 0) {
- 
+    // Il faut encore tourner a gauche.
     pwmPivot = -vitessePivot;
   } else {
- 
+    // revenir vers la droite.
     pwmPivot = vitessePivot;
   }
 
 
   Encoder_1.setMotorPwm(pwmPivot);
   Encoder_2.setMotorPwm(pwmPivot);
+}
+
+
+void retourTask(unsigned long maintenant) {
+  static bool retourDemarre = false;
+  static double erreurPrecedenteRetour = 0;
+  static unsigned long derniereCorrectionRetour = 0;
+
+
+  //  pivoter vers le point de depart.
+  if (!retourPivotFait) {
+
+
+    if (!retourDemarre) {
+      erreurPrecedenteRetour = 0;
+      derniereCorrectionRetour = maintenant;
+      retourDemarre = true;
+
+
+      Serial.print("RETOUR : pivot vers ");
+      Serial.println(angleRetour);
+    }
+
+
+    if (maintenant - derniereCorrectionRetour < 20) {
+      return;
+    }
+
+
+    derniereCorrectionRetour = maintenant;
+
+
+    double erreur = angleRetour - gyro.getAngleZ();
+
+
+    // Prend toujours le chemin le plus court.
+    while (erreur > 180.0) {
+      erreur -= 360.0;
+    }
+
+
+    while (erreur < -180.0) {
+      erreur += 360.0;
+    }
+
+
+    if (fabs(erreur) <= 2.0) {
+      arreterRobot();
+      retourPivotFait = true;
+
+
+      // Preparation de la ligne droite de retour.
+      Encoder_1.setPulsePos(0);
+      Encoder_2.setPulsePos(0);
+
+
+      angleDepart = gyro.getAngleZ();
+      erreurPrecedente = 0;
+      sommeErreurs = 0;
+      derniereCorrection = maintenant;
+      derniereDistance = 0;
+
+
+      Serial.println("RETOUR : pivot termine");
+      return;
+    }
+
+
+    const double kp = 1.2;
+    const double kd = 8.0;
+
+
+    double correction =
+      kp * erreur + kd * (erreur - erreurPrecedenteRetour);
+
+
+    erreurPrecedenteRetour = erreur;
+
+
+    double pwmPivot;
+
+
+    if (erreur > 0) {
+      // Tourner a droite.
+      pwmPivot = constrain(fabs(correction), 60.0, 95.0);
+    } else {
+      // Tourner a gauche.
+      pwmPivot = -constrain(fabs(correction), 55.0, 90.0);
+    }
+
+
+    Encoder_1.setMotorPwm(pwmPivot);
+    Encoder_2.setMotorPwm(pwmPivot);
+
+
+    return;
+  }
+
+
+  //  avancer en ligne droite jusqu'au depart.
+  mettreAJourPosition(distanceParcourue());
+
+
+  if (distanceParcourue() >= distanceRetour) {
+    arreterRobot();
+
+
+    etatActuel = FIN_B;
+    debutEtat = maintenant;
+
+
+    Serial.println("RETOUR termine : robot au point de depart");
+    return;
+  }
+
+
+  avancerDroitTask(maintenant);
 }
 
 
