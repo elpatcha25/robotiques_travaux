@@ -236,7 +236,7 @@ void ledTask(unsigned long maintenant) {
 
 
     case PIVOT_1:
-      // Le segment A est termine : barre complete.
+      // Le segment A est termine 
       led.setColorAt(11, 0, 255, 0);
       afficherProgression(DISTANCE_FIX, DISTANCE_FIX);
       break;
@@ -252,7 +252,7 @@ void ledTask(unsigned long maintenant) {
 
 
     case PIVOT_2:
-      // Le segment B est termine : barre complete.
+      // Le segment B est termine 
       led.setColorAt(10, 0, 255, 0);
       afficherProgression(DISTANCE_OBSTACLE, DISTANCE_OBSTACLE);
       break;
@@ -268,7 +268,7 @@ void ledTask(unsigned long maintenant) {
 
 
     case PIVOT_FINAL:
-      // Le segment C est termine : barre complete.
+      // Le segment C est termine 
       led.setColorAt(9, 0, 255, 0);
       afficherProgression(DISTANCE_FIX, DISTANCE_FIX);
       break;
@@ -355,14 +355,14 @@ void parcoursTask(unsigned long maintenant) {
 
 
     case SEGMENT_B:
-      // Pause apres le pivot, sans delay().
+      
       if (maintenant < pauseJusqua) {
         arreterRobot();
         break;
       }
 
 
-      // Premiere fois apres la pause : enregistrer la nouvelle direction.
+
       if (!segmentPrepare) {
         angleDepart = gyro.getAngleZ();
         erreurPrecedente = 0;
@@ -393,14 +393,14 @@ void parcoursTask(unsigned long maintenant) {
 
 
     case SEGMENT_C:
-      // Pause apres le pivot, sans delay().
+    
       if (maintenant < pauseJusqua) {
         arreterRobot();
         break;
       }
 
 
-      // Premiere fois apres la pause : enregistrer la nouvelle direction.
+    
       if (!segmentPrepare) {
         angleDepart = gyro.getAngleZ();
         erreurPrecedente = 0;
@@ -527,12 +527,12 @@ void pivotGauche90Task(unsigned long maintenant) {
     pivotDemarre = false;
 
 
-    // Preparation du segment B.
+
     Encoder_1.setPulsePos(0);
     Encoder_2.setPulsePos(0);
 
 
-    // Pause de 500 ms apres le pivot.
+
     pauseJusqua = maintenant + 500;
 
 
@@ -601,12 +601,10 @@ void pivotDroite90Task(unsigned long maintenant) {
     pivotDemarre = false;
 
 
-    // Preparation du segment C.
     Encoder_1.setPulsePos(0);
     Encoder_2.setPulsePos(0);
 
 
-    // Pause de 500 ms apres le pivot.
     pauseJusqua = maintenant + 500;
 
 
@@ -710,10 +708,10 @@ void pivot180Task(unsigned long maintenant) {
 
 
   if (erreur < 0) {
-    // Il faut encore tourner a gauche.
+ 
     pwmPivot = -vitessePivot;
   } else {
-    // Il a depasse la cible : revenir vers la droite.
+ 
     pwmPivot = vitessePivot;
   }
 
